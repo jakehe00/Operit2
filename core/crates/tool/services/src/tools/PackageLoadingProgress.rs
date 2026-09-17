@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 use operit_store::PreferencesDataStore::{mutableStateFlow, MutableStateFlow, StateFlow};
@@ -250,6 +251,17 @@ pub fn completePluginLoadingSession() {
         }
         progress.forceExpanded = false;
     });
-    std::thread::sleep(Duration::from_millis(120));
+    pauseBeforePluginLoadingDismissal();
     skipPluginLoading();
 }
+
+/// Holding the finished panel on screen for one more frame is a native-only
+/// nicety; the wasm host has no threads, and the platform boundary guard in
+/// operit-proxy-scan rejects `std::thread` anywhere in the wasm source set.
+#[cfg(not(target_arch = "wasm32"))]
+fn pauseBeforePluginLoadingDismissal() {
+    std::thread::sleep(Duration::from_millis(120));
+}
+
+#[cfg(target_arch = "wasm32")]
+fn pauseBeforePluginLoadingDismissal() {}
