@@ -54,7 +54,13 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("release")
-            proguardFiles("proguard-rules.pro")
+            // Enable R8 code shrinking/optimization plus resource shrinking.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
         }
     }
 
@@ -188,6 +194,7 @@ val cargoBuildOperitFlutterBridgeTasks = selectedOperitRustTargets.map { target 
         commandLine(
             "cargo",
             "build",
+            "--release",
             "--manifest-path",
             operitBridgeCrate.resolve("Cargo.toml").absolutePath,
             "--target",
@@ -195,7 +202,7 @@ val cargoBuildOperitFlutterBridgeTasks = selectedOperitRustTargets.map { target 
         )
         doLast {
             copy {
-                from(operitBridgeCrate.resolve("target/${target.rustTarget}/debug/liboperit_flutter_bridge.so"))
+                from(operitBridgeCrate.resolve("target/${target.rustTarget}/release/liboperit_flutter_bridge.so"))
                 into(operitBridgeJniLibs.resolve(target.abi))
             }
         }
