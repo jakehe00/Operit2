@@ -46,6 +46,11 @@ final class _DartObject extends Struct {
   external _ObjectValue value;
 }
 
+/// Mirrors the Rust host, which publishes addresses as fixed-width hexadecimal
+/// handles: tagged arm64 heap addresses exceed `i64::MAX`, and `jsonDecode`
+/// widens such JSON numbers into doubles that break Dart's `as int` casts.
+String _handle(int address) => address.toRadixString(16).padLeft(16, '0');
+
 class _HostConnection {
   /// Allocates a token released by the real native allocator finalizer.
   _HostConnection() : token = calloc<Uint8>().cast<Void>();
@@ -62,30 +67,26 @@ class _HostConnection {
   /// Publishes function pointers using the same versioned descriptor as the Rust host.
   String descriptor() => jsonEncode({
     'version': 1,
-    'session': token.address,
-    'attach':
-        Pointer.fromFunction<
-              Bool Function(Pointer<Void>, Pointer<Void>, Int64)
-            >(_attach, false)
-            .address,
-    'submit':
-        Pointer.fromFunction<
-              Void Function(
-                Pointer<Void>,
-                Uint32,
-                Int64,
-                Pointer<Uint8>,
-                UintPtr,
-              )
-            >(_submit)
-            .address,
-    'allocate': Pointer.fromFunction<Pointer<Uint8> Function(UintPtr)>(
-      _allocate,
-    ).address,
-    'free': Pointer.fromFunction<Void Function(Pointer<Uint8>, UintPtr)>(
-      _free,
-    ).address,
-    'release': calloc.nativeFree.address,
+    'session': _handle(token.address),
+    'attach': _handle(
+      Pointer.fromFunction<
+            Bool Function(Pointer<Void>, Pointer<Void>, Int64)
+          >(_attach, false)
+          .address,
+    ),
+    'submit': _handle(
+      Pointer.fromFunction<
+            Void Function(Pointer<Void>, Uint32, Int64, Pointer<Uint8>, UintPtr)
+          >(_submit)
+          .address,
+    ),
+    'allocate': _handle(
+      Pointer.fromFunction<Pointer<Uint8> Function(UintPtr)>(_allocate).address,
+    ),
+    'free': _handle(
+      Pointer.fromFunction<Void Function(Pointer<Uint8>, UintPtr)>(_free).address,
+    ),
+    'release': _handle(calloc.nativeFree.address),
   });
 
   /// Copies a framed typed-data message through the actual Dart VM native API.
@@ -265,6 +266,27 @@ void main() {
     expect(_allocatedBuffers, _freedBuffers);
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(const MethodChannel('operit/runtime'), null);
+  });
+
+  test('tagged handles survive the descriptor and legacy hosts decode', () {
+    // A tagged arm64 heap address cannot travel as a JSON number: `jsonDecode`
+    // widens anything above i64::MAX into a double, failing every `as int`.
+    final tagged = jsonDecode('{"session":"b4000071deadbeef"}');
+    expect(tagged['session'], isA<String>());
+    final address = decodePointerHandle(tagged['session'], 'session');
+    expect(address, isNegative);
+    expect(Pointer<Void>.fromAddress(address).address, address);
+    expect(
+      (BigInt.from(address) & ((BigInt.one << 64) - BigInt.one)).toRadixString(
+        16,
+      ),
+      'b4000071deadbeef',
+    );
+    expect(decodePointerHandle(140234567890123, 'session'), 140234567890123);
+    expect(
+      () => decodePointerHandle('0xnot-hex', 'session'),
+      throwsStateError,
+    );
   });
 
   test('calls and snapshots use FFI after one host bootstrap', () async {

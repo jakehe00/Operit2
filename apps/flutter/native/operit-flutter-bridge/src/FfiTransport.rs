@@ -221,8 +221,19 @@ impl Drop for FfiSession {
     }
 }
 
+/// Renders one address as a hexadecimal handle for the JSON descriptor.
+///
+/// Addresses must survive as exact 64-bit values, but JSON numbers do not: on
+/// arm64 devices with memory tagging enabled the allocator hands out tagged heap
+/// pointers (`0xb4...`), and anything above `i64::MAX` is decoded by `dart:convert`
+/// as a `double`, which then fails every `as int` cast on the receiving side.
+/// Hexadecimal text keeps all 64 bits intact and still fits an arbitrary-precision
+/// parse on the Dart side.
+fn pointer_handle(address: usize) -> String {
+    format!("{address:016x}")
+}
+
 /// Creates a retained connection and returns its versioned function table to the host.
-/// The host must pass a live handle returned by the bridge creation exports.
 #[no_mangle]
 pub unsafe extern "C" fn operit_flutter_bridge_ffi_connect(
     handle: *const OperitFlutterBridge,
@@ -239,12 +250,12 @@ pub unsafe extern "C" fn operit_flutter_bridge_ffi_connect(
     });
     let descriptor = serde_json::json!({
         "version": 1,
-        "session": Arc::into_raw(session) as usize,
-        "attach": ffi_attach as *const () as usize,
-        "submit": ffi_submit as *const () as usize,
-        "allocate": ffi_allocate as *const () as usize,
-        "free": ffi_free as *const () as usize,
-        "release": ffi_release as *const () as usize,
+        "session": pointer_handle(Arc::into_raw(session) as usize),
+        "attach": pointer_handle(ffi_attach as *const () as usize),
+        "submit": pointer_handle(ffi_submit as *const () as usize),
+        "allocate": pointer_handle(ffi_allocate as *const () as usize),
+        "free": pointer_handle(ffi_free as *const () as usize),
+        "release": pointer_handle(ffi_release as *const () as usize),
     });
     CString::new(descriptor.to_string())
         .expect("FFI descriptor JSON")

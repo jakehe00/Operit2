@@ -20,6 +20,52 @@ typedef _Allocate = Pointer<Uint8> Function(int);
 typedef _FreeNative = Void Function(Pointer<Uint8>, UintPtr);
 typedef _Free = void Function(Pointer<Uint8>, int);
 
+/// Mask covering one machine word, used to fold addresses into Dart integers.
+final BigInt _wordMask = (BigInt.one << 64) - BigInt.one;
+final BigInt _wordSignBit = BigInt.one << 63;
+final BigInt _wordModulus = BigInt.one << 64;
+
+/// Decodes one address from the versioned host descriptor.
+///
+/// Hosts publish hexadecimal handles because tagged heap addresses on arm64
+/// memory-tagging devices exceed `i64::MAX`, and `jsonDecode` widens any JSON
+/// integer past that bound into a `double`, which then throws on `as int`.
+/// Legacy numeric handles from older hosts are still accepted.
+int decodePointerHandle(Object? value, String field) {
+  if (value is int) {
+    if (value == 0) {
+      throw StateError('Core FFI descriptor provides no handle for "$field"');
+    }
+    return value;
+  }
+  if (value is String) {
+    final trimmed = value.trim();
+    final hasPrefix =
+        trimmed.length > 2 &&
+        (trimmed.startsWith('0x') || trimmed.startsWith('0X'));
+    final parsed = BigInt.tryParse(
+      hasPrefix ? trimmed.substring(2) : trimmed,
+      radix: 16,
+    );
+    if (parsed == null) {
+      throw StateError('Core FFI descriptor has a malformed "$field" handle');
+    }
+    final folded = foldAddressIntoWord(parsed);
+    if (folded == 0) {
+      throw StateError('Core FFI descriptor provides no handle for "$field"');
+    }
+    return folded;
+  }
+  throw StateError('Core FFI descriptor has an unsupported "$field" handle');
+}
+
+/// Folds an unsigned 64-bit address into Dart's signed integer representation.
+int foldAddressIntoWord(BigInt address) {
+  final word = address & _wordMask;
+  final signed = word >= _wordSignBit ? word - _wordModulus : word;
+  return signed.toInt();
+}
+
 class FfiCoreTransport implements CoreByteTransport {
   /// Creates a lazily attached connection for this Dart isolate.
   FfiCoreTransport();
@@ -71,28 +117,30 @@ class _FfiConnection implements Finalizable {
     if (descriptor['version'] != 1 || NativeApi.majorVersion != 2) {
       throw StateError('Unsupported Core FFI or Dart native API version');
     }
-    _session = Pointer<Void>.fromAddress(descriptor['session'] as int);
+    _session = Pointer<Void>.fromAddress(
+      decodePointerHandle(descriptor['session'], 'session'),
+    );
     _submit = Pointer<NativeFunction<_SubmitNative>>.fromAddress(
-      descriptor['submit'] as int,
+      decodePointerHandle(descriptor['submit'], 'submit'),
     ).asFunction<_Submit>();
     _allocate = Pointer<NativeFunction<_AllocateNative>>.fromAddress(
-      descriptor['allocate'] as int,
+      decodePointerHandle(descriptor['allocate'], 'allocate'),
     ).asFunction<_Allocate>();
     _free = Pointer<NativeFunction<_FreeNative>>.fromAddress(
-      descriptor['free'] as int,
+      decodePointerHandle(descriptor['free'], 'free'),
     ).asFunction<_Free>();
     _finalizer = NativeFinalizer(
       Pointer<NativeFunction<Void Function(Pointer<Void>)>>.fromAddress(
-        descriptor['release'] as int,
+        decodePointerHandle(descriptor['release'], 'release'),
       ),
     );
     _release =
         Pointer<NativeFunction<Void Function(Pointer<Void>)>>.fromAddress(
-          descriptor['release'] as int,
+          decodePointerHandle(descriptor['release'], 'release'),
         ).asFunction<void Function(Pointer<Void>)>();
     _finalizer.attach(this, _session, detach: this);
     final attach = Pointer<NativeFunction<_AttachNative>>.fromAddress(
-      descriptor['attach'] as int,
+      decodePointerHandle(descriptor['attach'], 'attach'),
     ).asFunction<_Attach>();
     if (!attach(
       _session,
